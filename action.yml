@@ -1,0 +1,84 @@
+name: 'Lambda Deploy'
+description: 'Automatic Lambda deployment'
+branding:
+  icon: 'cloud'
+  color: 'gray-dark'
+inputs:
+  name:
+    description: 'Lambda name'
+    required: true
+  kind:
+    description: 'Deployment kind'
+    required: true
+  production-bucket:
+    description: 'Bucket name for production assets'
+    required: false
+  staging-bucket:
+    description: 'Bucket name for staging assets'
+    required: false
+  environment:
+    description: 'Target environment for deployment'
+    required: false
+  production-environment:
+    description: 'Production target environment for deployment'
+    required: false
+  staging-environment:
+    description: 'Staging target environment for deployment'
+    required: false
+  production:
+    description: 'Whether to deploy it to production'
+    required: false
+  publish:
+    description: 'Whether to automatically publish s3-based lambdas'
+    required: false
+runs:
+  using: "composite"
+  steps:
+    - name: "Run ecr-deploy"
+      shell: bash
+      run: |
+        set -eux
+        entrypoint='/gympass/lambda-builder'
+        if [ -n '${{ inputs.entrypoint }}' ]; then entrypoint="${{ inputs.entrypoint }}"; fi
+        commonOpts=("$entrypoint")
+
+        # Required items
+        commonOpts+=(--github-token ${{ github.token }})
+        if [ -n '${{ inputs.name }}' ]; then commonOpts+=(--name ${{ inputs.name }}); fi
+        if [ -n '${{ inputs.kind }}' ]; then commonOpts+=(--kind ${{ inputs.kind }}); fi
+        if [ -n '${{ inputs.publish }}' ]; then commonOpts+=(--publish); fi
+
+        # Validate environment, production-environment, and staging-environment
+        if [[ -n '${{ inputs.environment }}' && ( -n '${{ inputs.production-environment }}' || -n '${{ inputs.staging-environment }}' ) ]]; then
+          # Both environment and at least one of *-environment defined.
+          echo "Either provide 'environment', or 'production-environment' and 'staging-environment'. Not both."
+          exit 1
+        elif [[ -z '${{ inputs.environment }}' && ( -z '${{ inputs.production-environment }}' || -z '${{ inputs.staging-environment }}' ) ]]; then
+          # Neither environment and *-environment defined.
+          echo "Expected 'environment', or 'production-environment' and 'staging-environment' to be defined."
+          exit 1
+        elif [[ -z '${{ inputs.environment }}' && -z '${{ inputs.production-environment }}' && -n '${{ inputs.staging-environment }}' ]] ||
+             [[ -z '${{ inputs.environment }}' && -n '${{ inputs.production-environment }}' && -z '${{ inputs.staging-environment }}' ]]; then
+          echo "When providing production-environment, staging-environment must also be present (and vice-versa)."
+          exit 1
+        fi
+
+        if [[ -n '${{ inputs.environment }}' ]]; then
+          export PRODUCTION_ENVIRONMENT='${{ inputs.environment }}'
+          export STAGING_ENVIRONMENT='staging'
+        else
+          export PRODUCTION_ENVIRONMENT='${{ inputs.production-environment }}'
+          export STAGING_ENVIRONMENT='${{ inputs.staging-environment }}'
+        fi
+
+        stagingCmd=("${commonOpts[@]}" --environment "$STAGING_ENVIRONMENT")
+        if [ -n '${{ inputs.staging-bucket }}' ]; then stagingCmd+=(--bucket ${{ inputs.staging-bucket }}); fi
+        prodCmd=("${commonOpts[@]}" --environment "$PRODUCTION_ENVIRONMENT")
+        if [ -n '${{ inputs.production-bucket }}' ]; then prodCmd+=(--bucket ${{ inputs.production-bucket }}); fi
+
+        "${stagingCmd[@]}"
+
+        if [[ '${{ inputs.production }}' == 'true' ]]; then
+            /gympass/confirm --github-token ${{ github.token }} --exit-code
+            "${prodCmd[@]}"
+        fi
